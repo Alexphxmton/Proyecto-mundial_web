@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# Build outputs
+/dist/
+/build/
+coverage/
+.vite/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Optional lockfiles (choose one if you prefer not to track them)
+# package-lock.json
+# yarn.lock
+
+# Database local dumps
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
