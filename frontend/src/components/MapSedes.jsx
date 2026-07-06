@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import api from '../services/api';
-import { MapPin, Trophy, ShieldAlert } from 'lucide-react';
+import { MapPin, ShieldAlert } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 
 // Marcador personalizado premium tipo pulso de radar
-const createCustomIcon = (cityName) => {
+const createCustomIcon = () => {
   return L.divIcon({
     className: 'custom-leaflet-marker',
     html: `
@@ -102,6 +102,11 @@ const MapSedes = () => {
   // Centro de América del Norte (EE.UU., México, Canadá)
   const position = [39.099727, -94.578567]; 
   const zoom = 4;
+  const sedesConCoordenadas = sedes.filter((sede) => {
+    const latitud = Number(sede.latitud);
+    const longitud = Number(sede.longitud);
+    return Number.isFinite(latitud) && Number.isFinite(longitud);
+  });
 
   return (
     <div className="glass-panel animate-fade-in" style={{ padding: '1.5rem', height: '100%', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -128,11 +133,11 @@ const MapSedes = () => {
             className="dark-tile-layer"
           />
 
-          {sedes.map((sede) => (
+          {sedesConCoordenadas.map((sede) => (
             <Marker 
               key={sede.id} 
-              position={[parseFloat(sede.latitud), parseFloat(sede.longitud)]}
-              icon={createCustomIcon(sede.nombre)}
+              position={[Number(sede.latitud), Number(sede.longitud)]}
+              icon={createCustomIcon()}
             >
               <Popup>
                 <div style={{ fontFamily: 'var(--font-body)', padding: '0.2rem' }}>
@@ -152,7 +157,7 @@ const MapSedes = () => {
                       }}>
                         <div style={{ fontWeight: 600 }}>{est.nombre}</div>
                         <div style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                          Capacidad: {est.capacidad.toLocaleString()} espectadores
+                          Capacidad: {Number.isFinite(Number(est.capacidad)) ? Number(est.capacidad).toLocaleString() : 'No disponible'}
                         </div>
                       </div>
                     ))}
