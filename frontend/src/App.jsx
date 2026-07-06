@@ -15,6 +15,7 @@ import GroupsPage from './pages/Groups';
 import GroupDetailPage from './pages/GroupDetail';
 import ProfilePage from './pages/Profile';
 import AdminDashboard from './pages/AdminDashboard';
+import PredictionsPage from './pages/Predictions';
 import MapSedes from './components/MapSedes';
 
 // Ruta Protegida
@@ -100,6 +101,11 @@ function App() {
             <Route path="/profile" element={
               <ProtectedRoute>
                 <ProfilePage />
+              </ProtectedRoute>
+            } />
+            <Route path="/predictions" element={
+              <ProtectedRoute>
+                <PredictionsPage />
               </ProtectedRoute>
             } />
 

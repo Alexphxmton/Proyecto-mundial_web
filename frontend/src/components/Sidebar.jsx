@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LayoutDashboard, Calendar, Users, MapPin, User, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Calendar, Users, MapPin, User, Settings, LogOut, ClipboardList } from 'lucide-react';
 
 const Sidebar = ({ isOpen }) => {
   const { user, logout } = useAuth();
@@ -61,14 +61,25 @@ const Sidebar = ({ isOpen }) => {
         </NavLink>
 
         {user && (
-          <NavLink 
-            to="/groups" 
-            className={({ isActive }) => `btn ${isActive ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ justifyContent: 'flex-start', width: '100%' }}
-          >
-            <Users size={18} />
-            Mis Grupos
-          </NavLink>
+          <>
+            <NavLink 
+              to="/groups" 
+              className={({ isActive }) => `btn ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ justifyContent: 'flex-start', width: '100%' }}
+            >
+              <Users size={18} />
+              Mis Grupos
+            </NavLink>
+
+            <NavLink 
+              to="/predictions" 
+              className={({ isActive }) => `btn ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ justifyContent: 'flex-start', width: '100%' }}
+            >
+              <ClipboardList size={18} />
+              Mis Pronósticos
+            </NavLink>
+          </>
         )}
 
         <NavLink 

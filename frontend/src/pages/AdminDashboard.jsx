@@ -73,8 +73,8 @@ const AdminDashboard = () => {
     setSuccess('');
     try {
       const response = await api.post('/admin/sync-today');
-      setSuccess(response.data.message || 'Sincronización masiva de partidos ejecutada con éxito');
-      loadData(); // Recargar partidos con los nuevos resultados
+      setSuccess(response.data.message || 'Importación y sincronización de partidos ejecutada con éxito');
+      loadData(); // Recargar partidos, equipos y estadios importados
     } catch (err) {
       console.error(err);
       setError('Error al ejecutar la sincronización automática: ' + (err.response?.data?.error || err.message));
@@ -103,8 +103,7 @@ const AdminDashboard = () => {
 
     if (!faseId || !localId || !visitanteId || !estadioId || !fechaHora) {
       setError('Por favor, completa todos los campos obligatorios');
-      return;
-    }
+      return;     }
 
     if (localId === visitanteId) {
       setError('El equipo local y el visitante no pueden ser el mismo');
@@ -201,7 +200,7 @@ const AdminDashboard = () => {
           <h1 style={{ fontSize: '2rem', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Settings color="var(--primary)" /> Panel de Administración
           </h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Registra nuevos partidos, asocia IDs de thesportsdb.com y gestiona la sincronización.</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Importa automáticamente el calendario desde TheSportsDB y conserva el registro manual cuando sea necesario.</p>
         </div>
 
         <button 
@@ -253,6 +252,7 @@ const AdminDashboard = () => {
                 value={apiEventId} 
                 onChange={(e) => setApiEventId(e.target.value)}
               />
+              <small style={{ color: 'var(--text-secondary)' }}>Si lo dejas vacío, el partido se mantendrá como manual.</small>
             </div>
 
             {/* Fase */}

@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const { Partido } = require('../config/db');
 const syncService = require('../services/syncService');
 
 const createMatch = async (req, res) => {
@@ -13,16 +13,26 @@ const createMatch = async (req, res) => {
   }
 
   try {
-    const newMatch = await db.query(
-      `INSERT INTO partidos (api_event_id, fase_id, equipo_local_id, equipo_visitante_id, estadio_id, fecha_hora, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, 'PROGRAMADO')
-       RETURNING id, api_event_id, fase_id, equipo_local_id, equipo_visitante_id, estadio_id, fecha_hora, estado`,
-      [api_event_id || null, fase_id, equipo_local_id, equipo_visitante_id, estadio_id, fecha_hora]
-    );
+    if (api_event_id) {
+      const existingApiMatch = await Partido.findOne({ where: { api_event_id } });
+      if (existingApiMatch) {
+        return res.status(409).json({ error: 'Ya existe un partido registrado con ese TheSportsDB Event ID' });
+      }
+    }
+
+    const newMatch = await Partido.create({
+      api_event_id: api_event_id || null,
+      fase_id,
+      equipo_local_id,
+      equipo_visitante_id,
+      estadio_id,
+      fecha_hora,
+      estado: 'PROGRAMADO',
+    });
 
     res.status(201).json({
       message: 'Partido registrado exitosamente',
-      match: newMatch.rows[0],
+      match: newMatch,
     });
   } catch (error) {
     console.error('Error al registrar partido:', error);
@@ -43,25 +53,31 @@ const updateMatch = async (req, res) => {
   }
 
   try {
-    // Verificar si el partido existe
-    const matchCheck = await db.query('SELECT id, goles_local, goles_visitante FROM partidos WHERE id = $1', [id]);
-    if (matchCheck.rows.length === 0) {
+    const match = await Partido.findByPk(id);
+    if (!match) {
       return res.status(404).json({ error: 'Partido no encontrado' });
     }
 
-    // Actualizar datos del partido (no permitimos actualizar los goles manualmente)
-    const updatedMatch = await db.query(
-      `UPDATE partidos
-       SET api_event_id = $1, fase_id = $2, equipo_local_id = $3, equipo_visitante_id = $4,
-           estadio_id = $5, fecha_hora = $6, estado = $7, fecha_actualizacion = CURRENT_TIMESTAMP
-       WHERE id = $8
-       RETURNING id, api_event_id, fase_id, equipo_local_id, equipo_visitante_id, estadio_id, fecha_hora, estado`,
-      [api_event_id || null, fase_id, equipo_local_id, equipo_visitante_id, estadio_id, fecha_hora, estado, id]
-    );
+    if (api_event_id) {
+      const existingApiMatch = await Partido.findOne({ where: { api_event_id } });
+      if (existingApiMatch && existingApiMatch.id !== match.id) {
+        return res.status(409).json({ error: 'Ya existe otro partido registrado con ese TheSportsDB Event ID' });
+      }
+    }
+
+    const updatedMatch = await match.update({
+      api_event_id: api_event_id || null,
+      fase_id,
+      equipo_local_id,
+      equipo_visitante_id,
+      estadio_id,
+      fecha_hora,
+      estado,
+    });
 
     res.json({
       message: 'Partido actualizado exitosamente (excluyendo marcadores)',
-      match: updatedMatch.rows[0],
+      match: updatedMatch,
     });
   } catch (error) {
     console.error('Error al actualizar partido:', error);
@@ -71,8 +87,11 @@ const updateMatch = async (req, res) => {
 
 const triggerSyncToday = async (req, res) => {
   try {
-    await syncService.syncTodayMatches();
-    res.json({ message: 'Sincronización manual forzada ejecutada con éxito' });
+    const summary = await syncService.syncTodayMatches();
+    res.json({
+      message: `Sincronización ejecutada: ${summary.created} partidos creados, ${summary.updated} actualizados, ${summary.skipped} omitidos.`,
+      summary,
+    });
   } catch (error) {
     console.error('Error al forzar la sincronización:', error);
     res.status(500).json({ error: 'Error al ejecutar la sincronización' });
@@ -82,12 +101,11 @@ const triggerSyncToday = async (req, res) => {
 const triggerSyncMatch = async (req, res) => {
   const { id } = req.params;
   try {
-    const matchRes = await db.query('SELECT id, api_event_id FROM partidos WHERE id = $1', [id]);
-    if (matchRes.rows.length === 0) {
+    const match = await Partido.findByPk(id, { attributes: ['id', 'api_event_id'] });
+    if (!match) {
       return res.status(404).json({ error: 'Partido no encontrado' });
     }
 
-    const match = matchRes.rows[0];
     if (!match.api_event_id) {
       return res.status(400).json({ error: 'El partido no tiene un ID de evento de API asignado' });
     }

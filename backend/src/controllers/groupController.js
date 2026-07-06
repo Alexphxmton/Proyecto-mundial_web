@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const { Grupo, GrupoUsuario, ClasificacionGrupo, Pronostico, Usuario } = require('../config/db');
 
 // Generador de códigos de invitación
 const generateInviteCode = () => {
@@ -18,64 +18,35 @@ const createGroup = async (req, res) => {
     return res.status(400).json({ error: 'El nombre del grupo es obligatorio' });
   }
 
-  const client = await db.pool.connect();
+  const transaction = await require('../config/db').sequelize.transaction();
   try {
-    await client.query('BEGIN');
-
-    // Generar un código único
     let inviteCode = generateInviteCode();
     let codeExists = true;
     while (codeExists) {
-      const codeCheck = await client.query('SELECT id FROM grupos WHERE codigo_invitacion = $1', [inviteCode]);
-      if (codeCheck.rows.length === 0) {
+      const existing = await Grupo.findOne({ where: { codigo_invitacion: inviteCode }, transaction });
+      if (!existing) {
         codeExists = false;
       } else {
         inviteCode = generateInviteCode();
       }
     }
 
-    // 1. Crear el grupo
-    const groupRes = await client.query(
-      `INSERT INTO grupos (nombre, codigo_invitacion, creador_id)
-       VALUES ($1, $2, $3)
-       RETURNING id, nombre, codigo_invitacion, creador_id, fecha_creacion`,
-      [nombre, inviteCode, creatorId]
-    );
-    const newGroup = groupRes.rows[0];
+    const newGroup = await Grupo.create({ nombre, codigo_invitacion: inviteCode, creador_id: creatorId }, { transaction });
+    await GrupoUsuario.create({ grupo_id: newGroup.id, usuario_id: creatorId }, { transaction });
 
-    // 2. Agregar al creador como participante
-    await client.query(
-      `INSERT INTO grupo_usuarios (grupo_id, usuario_id)
-       VALUES ($1, $2)`,
-      [newGroup.id, creatorId]
-    );
+    const puntosIniciales = await Pronostico.sum('puntos_obtenidos', { where: { usuario_id: creatorId }, transaction }) || 0;
+    await ClasificacionGrupo.create({ grupo_id: newGroup.id, usuario_id: creatorId, puntos_totales: puntosIniciales, posicion: 1 }, { transaction });
 
-    // 3. Inicializar la clasificación para el creador
-    // Calculamos si el usuario ya tiene puntos acumulados en pronósticos anteriores
-    const totalPuntosRes = await client.query(
-      'SELECT COALESCE(SUM(puntos_obtenidos), 0) as total FROM pronosticos WHERE usuario_id = $1',
-      [creatorId]
-    );
-    const puntosIniciales = parseInt(totalPuntosRes.rows[0].total);
-
-    await client.query(
-      `INSERT INTO clasificacion_grupo (grupo_id, usuario_id, puntos_totales, posicion)
-       VALUES ($1, $2, $3, 1)`,
-      [newGroup.id, creatorId, puntosIniciales]
-    );
-
-    await client.query('COMMIT');
+    await transaction.commit();
 
     res.status(201).json({
       message: 'Grupo creado exitosamente',
       group: newGroup,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await transaction.rollback();
     console.error('Error al crear grupo:', error);
     res.status(500).json({ error: 'Error al crear el grupo' });
-  } finally {
-    client.release();
   }
 };
 
@@ -87,103 +58,74 @@ const joinGroup = async (req, res) => {
     return res.status(400).json({ error: 'El código de invitación es obligatorio' });
   }
 
-  const client = await db.pool.connect();
+  const transaction = await require('../config/db').sequelize.transaction();
   try {
-    await client.query('BEGIN');
+    const grupo = await Grupo.findOne({ where: { codigo_invitacion: codigo_invitacion.toUpperCase().trim() }, transaction });
 
-    // 1. Buscar grupo por código
-    const groupRes = await client.query(
-      'SELECT id, nombre FROM grupos WHERE codigo_invitacion = $1',
-      [codigo_invitacion.toUpperCase().trim()]
-    );
-
-    if (groupRes.rows.length === 0) {
+    if (!grupo) {
       return res.status(404).json({ error: 'Código de invitación inválido o grupo no encontrado' });
     }
 
-    const grupo = groupRes.rows[0];
-
-    // 2. Verificar si ya es miembro
-    const memberCheck = await client.query(
-      'SELECT id FROM grupo_usuarios WHERE grupo_id = $1 AND usuario_id = $2',
-      [grupo.id, userId]
-    );
-
-    if (memberCheck.rows.length > 0) {
+    const memberCheck = await GrupoUsuario.findOne({ where: { grupo_id: grupo.id, usuario_id: userId }, transaction });
+    if (memberCheck) {
       return res.status(400).json({ error: 'Ya perteneces a este grupo' });
     }
 
-    // 3. Unir al usuario al grupo
-    await client.query(
-      'INSERT INTO grupo_usuarios (grupo_id, usuario_id) VALUES ($1, $2)',
-      [grupo.id, userId]
-    );
+    await GrupoUsuario.create({ grupo_id: grupo.id, usuario_id: userId }, { transaction });
 
-    // 4. Calcular sus puntos acumulados en pronósticos y agregarlo a clasificacion_grupo
-    const totalPuntosRes = await client.query(
-      'SELECT COALESCE(SUM(puntos_obtenidos), 0) as total FROM pronosticos WHERE usuario_id = $1',
-      [userId]
-    );
-    const puntosAcumulados = parseInt(totalPuntosRes.rows[0].total);
+    const puntosAcumulados = await Pronostico.sum('puntos_obtenidos', { where: { usuario_id: userId }, transaction }) || 0;
+    await ClasificacionGrupo.create({ grupo_id: grupo.id, usuario_id: userId, puntos_totales: puntosAcumulados, posicion: 1 }, { transaction });
 
-    // Insertar en la clasificación
-    await client.query(
-      `INSERT INTO clasificacion_grupo (grupo_id, usuario_id, puntos_totales, posicion)
-       VALUES ($1, $2, $3, 1)
-       ON CONFLICT (grupo_id, usuario_id) DO NOTHING`,
-      [grupo.id, userId, puntosAcumulados]
-    );
-
-    // 5. Recalcular las posiciones en el grupo ahora que hay un nuevo participante
-    const miembrosRes = await client.query(
-      'SELECT usuario_id, puntos_totales FROM clasificacion_grupo WHERE grupo_id = $1 ORDER BY puntos_totales DESC',
-      [grupo.id]
-    );
-    
+    const miembros = await ClasificacionGrupo.findAll({ where: { grupo_id: grupo.id }, order: [['puntos_totales', 'DESC'], ['usuario_id', 'ASC']], transaction });
     let posicion = 1;
-    for (let i = 0; i < miembrosRes.rows.length; i++) {
-      const item = miembrosRes.rows[i];
-      if (i > 0 && item.puntos_totales < miembrosRes.rows[i - 1].puntos_totales) {
+    for (let i = 0; i < miembros.length; i++) {
+      const item = miembros[i];
+      if (i > 0 && item.puntos_totales < miembros[i - 1].puntos_totales) {
         posicion = i + 1;
       }
-      await client.query(
-        'UPDATE clasificacion_grupo SET posicion = $1 WHERE grupo_id = $2 AND usuario_id = $3',
-        [posicion, grupo.id, item.usuario_id]
-      );
+      await item.update({ posicion }, { transaction });
     }
 
-    await client.query('COMMIT');
+    await transaction.commit();
 
     res.status(200).json({
       message: 'Te has unido al grupo exitosamente',
       group: grupo,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    await transaction.rollback();
     console.error('Error al unirse al grupo:', error);
     res.status(500).json({ error: 'Error al unirse al grupo' });
-  } finally {
-    client.release();
   }
 };
 
 const getUserGroups = async (req, res) => {
   const userId = req.user.id;
   try {
-    const groupsRes = await db.query(
-      `SELECT g.id, g.nombre, g.codigo_invitacion, g.creador_id, g.fecha_creacion, u.nombre as creador_nombre,
-              (SELECT COUNT(*) FROM grupo_usuarios gu WHERE gu.grupo_id = g.id) as total_participantes,
-              cg.puntos_totales, cg.posicion
-       FROM grupos g
-       JOIN grupo_usuarios gu ON g.id = gu.grupo_id
-       JOIN usuarios u ON g.creador_id = u.id
-       LEFT JOIN clasificacion_grupo cg ON cg.grupo_id = g.id AND cg.usuario_id = $1
-       WHERE gu.usuario_id = $1
-       ORDER BY g.fecha_creacion DESC`,
-      [userId]
-    );
+    const groups = await Grupo.findAll({
+      attributes: ['id', 'nombre', 'codigo_invitacion', 'creador_id', 'fecha_creacion'],
+      include: [
+        { model: Usuario, as: 'creador', attributes: ['nombre'] },
+        { model: GrupoUsuario, as: 'grupoUsuarios', attributes: ['id'] },
+        { model: ClasificacionGrupo, as: 'clasificaciones', where: { usuario_id: userId }, required: false, attributes: ['puntos_totales', 'posicion'] },
+      ],
+      where: { '$grupoUsuarios.usuario_id$': userId },
+      order: [['fecha_creacion', 'DESC']],
+    });
 
-    res.json(groupsRes.rows);
+    const mapped = groups.map((group) => ({
+      id: group.id,
+      nombre: group.nombre,
+      codigo_invitacion: group.codigo_invitacion,
+      creador_id: group.creador_id,
+      fecha_creacion: group.fecha_creacion,
+      creador_nombre: group.creador?.nombre,
+      total_participantes: group.grupoUsuarios?.length || 0,
+      puntos_totales: group.clasificaciones?.[0]?.puntos_totales || 0,
+      posicion: group.clasificaciones?.[0]?.posicion || null,
+    }));
+
+    res.json(mapped);
   } catch (error) {
     console.error('Error al obtener grupos:', error);
     res.status(500).json({ error: 'Error al obtener los grupos' });
@@ -195,53 +137,57 @@ const getGroupDetails = async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // Verificar que el usuario pertenece al grupo
-    const memberCheck = await db.query(
-      'SELECT id FROM grupo_usuarios WHERE grupo_id = $1 AND usuario_id = $2',
-      [grupoId, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
+    const memberCheck = await GrupoUsuario.findOne({ where: { grupo_id: grupoId, usuario_id: userId } });
+    if (!memberCheck) {
       return res.status(403).json({ error: 'No perteneces a este grupo y no puedes ver sus detalles' });
     }
 
-    // Obtener información del grupo
-    const groupRes = await db.query(
-      `SELECT g.id, g.nombre, g.codigo_invitacion, g.creador_id, u.nombre as creador_nombre, g.fecha_creacion
-       FROM grupos g
-       JOIN usuarios u ON g.creador_id = u.id
-       WHERE g.id = $1`,
-      [grupoId]
-    );
+    const group = await Grupo.findOne({
+      where: { id: grupoId },
+      include: [{ model: Usuario, as: 'creador', attributes: ['id', 'nombre'] }],
+      attributes: ['id', 'nombre', 'codigo_invitacion', 'creador_id', 'fecha_creacion'],
+    });
 
-    if (groupRes.rows.length === 0) {
+    if (!group) {
       return res.status(404).json({ error: 'Grupo no encontrado' });
     }
 
-    // Obtener participantes
-    const participantsRes = await db.query(
-      `SELECT u.id, u.nombre, u.email, gu.fecha_union
-       FROM usuarios u
-       JOIN grupo_usuarios gu ON u.id = gu.usuario_id
-       WHERE gu.grupo_id = $1
-       ORDER BY gu.fecha_union ASC`,
-      [grupoId]
-    );
+    const participants = await GrupoUsuario.findAll({
+      where: { grupo_id: grupoId },
+      include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'email'] }],
+      attributes: ['fecha_union'],
+      order: [['fecha_union', 'ASC']],
+    });
 
-    // Obtener clasificación
-    const rankingRes = await db.query(
-      `SELECT cg.posicion, cg.puntos_totales, u.nombre as usuario_nombre, u.id as usuario_id, u.email as usuario_email
-       FROM clasificacion_grupo cg
-       JOIN usuarios u ON cg.usuario_id = u.id
-       WHERE cg.grupo_id = $1
-       ORDER BY cg.posicion ASC, cg.puntos_totales DESC, u.nombre ASC`,
-      [grupoId]
-    );
+    const ranking = await ClasificacionGrupo.findAll({
+      where: { grupo_id: grupoId },
+      include: [{ model: Usuario, as: 'usuario', attributes: ['id', 'nombre', 'email'] }],
+      attributes: ['posicion', 'puntos_totales'],
+      order: [['posicion', 'ASC'], ['puntos_totales', 'DESC'], ['usuario_id', 'ASC']],
+    });
 
     res.json({
-      group: groupRes.rows[0],
-      participants: participantsRes.rows,
-      ranking: rankingRes.rows,
+      group: {
+        id: group.id,
+        nombre: group.nombre,
+        codigo_invitacion: group.codigo_invitacion,
+        creador_id: group.creador_id,
+        creador_nombre: group.creador?.nombre,
+        fecha_creacion: group.fecha_creacion,
+      },
+      participants: participants.map((entry) => ({
+        id: entry.usuario.id,
+        nombre: entry.usuario.nombre,
+        email: entry.usuario.email,
+        fecha_union: entry.fecha_union,
+      })),
+      ranking: ranking.map((entry) => ({
+        posicion: entry.posicion,
+        puntos_totales: entry.puntos_totales,
+        usuario_nombre: entry.usuario.nombre,
+        usuario_id: entry.usuario.id,
+        usuario_email: entry.usuario.email,
+      })),
     });
   } catch (error) {
     console.error('Error al obtener detalle del grupo:', error);

@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('../config/db');
+const { Usuario, Role } = require('../config/db');
 require('dotenv').config();
 
 const register = async (req, res) => {
@@ -16,31 +16,27 @@ const register = async (req, res) => {
   }
 
   try {
-    // Verificar si el correo ya está registrado
-    const userExists = await db.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-    if (userExists.rows.length > 0) {
+    const userExists = await Usuario.findOne({ where: { email } });
+    if (userExists) {
       return res.status(400).json({ error: 'El correo electrónico ya está registrado' });
     }
 
-    // Encriptar contraseña
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    // Obtener el ID del rol 'USUARIO'
-    const roleRes = await db.query("SELECT id FROM roles WHERE nombre = 'USUARIO'");
-    const rolId = roleRes.rows[0].id;
+    const role = await Role.findOne({ where: { nombre: 'USUARIO' } });
+    const rolId = role.id;
 
-    // Insertar usuario
-    const newUser = await db.query(
-      `INSERT INTO usuarios (nombre, email, password_hash, rol_id)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, nombre, email, rol_id`,
-      [nombre, email, passwordHash, rolId]
-    );
+    const newUser = await Usuario.create({ nombre, email, password_hash: passwordHash, rol_id: rolId });
 
     res.status(201).json({
       message: 'Usuario registrado exitosamente',
-      user: newUser.rows[0],
+      user: {
+        id: newUser.id,
+        nombre: newUser.nombre,
+        email: newUser.email,
+        rol_id: newUser.rol_id,
+      },
     });
   } catch (error) {
     console.error('Error en registro:', error);
@@ -56,26 +52,20 @@ const login = async (req, res) => {
   }
 
   try {
-    // Buscar usuario y su rol
-    const userRes = await db.query(
-      `SELECT u.id, u.nombre, u.email, u.password_hash, u.rol_id, r.nombre as rol_nombre, u.activo
-       FROM usuarios u
-       JOIN roles r ON u.rol_id = r.id
-       WHERE u.email = $1`,
-      [email]
-    );
+    const user = await Usuario.findOne({
+      where: { email },
+      include: [{ model: Role, as: 'rol', attributes: ['nombre'] }],
+      attributes: ['id', 'nombre', 'email', 'password_hash', 'rol_id', 'activo'],
+    });
 
-    if (userRes.rows.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
-
-    const user = userRes.rows[0];
 
     if (!user.activo) {
       return res.status(403).json({ error: 'Tu usuario se encuentra inactivo' });
     }
 
-    // Verificar contraseña
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
@@ -88,7 +78,7 @@ const login = async (req, res) => {
         nombre: user.nombre,
         email: user.email,
         rol_id: user.rol_id,
-        rol_nombre: user.rol_nombre,
+        rol_nombre: user.rol?.nombre,
       },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -101,7 +91,7 @@ const login = async (req, res) => {
         id: user.id,
         nombre: user.nombre,
         email: user.email,
-        rol: user.rol_nombre,
+        rol: user.rol?.nombre,
       },
     });
   } catch (error) {

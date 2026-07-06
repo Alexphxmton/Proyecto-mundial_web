@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const { Partido, Pronostico } = require('../config/db');
 
 const savePrediction = async (req, res) => {
   const { partido_id, goles_local_pronosticado, goles_visitante_pronosticado } = req.body;
@@ -16,17 +16,11 @@ const savePrediction = async (req, res) => {
   }
 
   try {
-    // 1. Obtener la fecha e inicio del partido
-    const matchRes = await db.query(
-      'SELECT fecha_hora, estado FROM partidos WHERE id = $1',
-      [partido_id]
-    );
+    const partido = await Partido.findByPk(partido_id, { attributes: ['fecha_hora', 'estado'] });
 
-    if (matchRes.rows.length === 0) {
+    if (!partido) {
       return res.status(404).json({ error: 'Partido no encontrado' });
     }
-
-    const partido = matchRes.rows[0];
 
     // 2. Verificar que el partido no haya empezado
     const matchTime = new Date(partido.fecha_hora);
@@ -38,22 +32,24 @@ const savePrediction = async (req, res) => {
       });
     }
 
-    // 3. Insertar o actualizar pronóstico (Upsert)
-    const predictionRes = await db.query(
-      `INSERT INTO pronosticos (usuario_id, partido_id, goles_local_pronosticado, goles_visitante_pronosticado)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (usuario_id, partido_id)
-       DO UPDATE SET 
-         goles_local_pronosticado = EXCLUDED.goles_local_pronosticado,
-         goles_visitante_pronosticado = EXCLUDED.goles_visitante_pronosticado,
-         fecha_actualizacion = CURRENT_TIMESTAMP
-       RETURNING id, usuario_id, partido_id, goles_local_pronosticado, goles_visitante_pronosticado`,
-      [userId, partido_id, gLocal, gVisitante]
-    );
+    const [prediction, created] = await Pronostico.findOrCreate({
+      where: { usuario_id: userId, partido_id },
+      defaults: { usuario_id: userId, partido_id, goles_local_pronosticado: gLocal, goles_visitante_pronosticado: gVisitante },
+    });
+
+    if (!created) {
+      await prediction.update({ goles_local_pronosticado: gLocal, goles_visitante_pronosticado: gVisitante });
+    }
 
     res.status(200).json({
       message: 'Pronóstico guardado exitosamente',
-      prediction: predictionRes.rows[0]
+      prediction: {
+        id: prediction.id,
+        usuario_id: prediction.usuario_id,
+        partido_id: prediction.partido_id,
+        goles_local_pronosticado: prediction.goles_local_pronosticado,
+        goles_visitante_pronosticado: prediction.goles_visitante_pronosticado,
+      }
     });
   } catch (error) {
     console.error('Error al guardar pronóstico:', error);
@@ -65,23 +61,41 @@ const getUserPredictions = async (req, res) => {
   const userId = req.user.id;
 
   try {
-    const predictionsRes = await db.query(
-      `SELECT p.id as prediction_id, p.goles_local_pronosticado, p.goles_visitante_pronosticado, p.puntos_obtenidos, p.fecha_creacion,
-              m.id as partido_id, m.fecha_hora, m.goles_local, m.goles_visitante, m.estado,
-              el.nombre as local_nombre, el.bandera_url as local_bandera, el.codigo_fifa as local_codigo,
-              ev.nombre as visitante_nombre, ev.bandera_url as visitante_bandera, ev.codigo_fifa as visitante_codigo,
-              f.nombre as fase_nombre
-       FROM pronosticos p
-       JOIN partidos m ON p.partido_id = m.id
-       JOIN equipos el ON m.equipo_local_id = el.id
-       JOIN equipos ev ON m.equipo_visitante_id = ev.id
-       JOIN fases f ON m.fase_id = f.id
-       WHERE p.usuario_id = $1
-       ORDER BY m.fecha_hora ASC`,
-      [userId]
-    );
+    const predictions = await Pronostico.findAll({
+      where: { usuario_id: userId },
+      include: [{
+        model: Partido,
+        as: 'partido',
+        attributes: ['id', 'fecha_hora', 'goles_local', 'goles_visitante', 'estado'],
+        include: [
+          { model: require('../config/db').Equipo, as: 'equipoLocal', attributes: ['nombre', 'bandera_url', 'codigo_fifa'] },
+          { model: require('../config/db').Equipo, as: 'equipoVisitante', attributes: ['nombre', 'bandera_url', 'codigo_fifa'] },
+          { model: require('../config/db').Fase, as: 'fase', attributes: ['nombre'] },
+        ],
+      }],
+      attributes: ['id', 'goles_local_pronosticado', 'goles_visitante_pronosticado', 'puntos_obtenidos', 'fecha_creacion'],
+      order: [[{ model: Partido, as: 'partido' }, 'fecha_hora', 'ASC']],
+    });
 
-    res.json(predictionsRes.rows);
+    res.json(predictions.map((prediction) => ({
+      prediction_id: prediction.id,
+      goles_local_pronosticado: prediction.goles_local_pronosticado,
+      goles_visitante_pronosticado: prediction.goles_visitante_pronosticado,
+      puntos_obtenidos: prediction.puntos_obtenidos,
+      fecha_creacion: prediction.fecha_creacion,
+      partido_id: prediction.partido.id,
+      fecha_hora: prediction.partido.fecha_hora,
+      goles_local: prediction.partido.goles_local,
+      goles_visitante: prediction.partido.goles_visitante,
+      estado: prediction.partido.estado,
+      local_nombre: prediction.partido.equipoLocal?.nombre,
+      local_bandera: prediction.partido.equipoLocal?.bandera_url,
+      local_codigo: prediction.partido.equipoLocal?.codigo_fifa,
+      visitante_nombre: prediction.partido.equipoVisitante?.nombre,
+      visitante_bandera: prediction.partido.equipoVisitante?.bandera_url,
+      visitante_codigo: prediction.partido.equipoVisitante?.codigo_fifa,
+      fase_nombre: prediction.partido.fase?.nombre,
+    })));
   } catch (error) {
     console.error('Error al obtener pronósticos del usuario:', error);
     res.status(500).json({ error: 'Error al obtener los pronósticos' });

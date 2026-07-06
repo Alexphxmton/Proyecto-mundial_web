@@ -1,62 +1,59 @@
-const db = require('../config/db');
+const { GrupoUsuario, Partido, Equipo, Fase, Estadio, Ciudad, ClasificacionGrupo, Pronostico } = require('../config/db');
 
 const getSummary = async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // 1. Cantidad de grupos a los que pertenece
-    const groupsCountRes = await db.query(
-      'SELECT COUNT(*)::integer as count FROM grupo_usuarios WHERE usuario_id = $1',
-      [userId]
-    );
-    const cantidadGrupos = groupsCountRes.rows[0].count;
+    const cantidadGrupos = await GrupoUsuario.count({ where: { usuario_id: userId } });
 
-    // 2. Próximos partidos pendientes de pronóstico
-    const pendingMatchesRes = await db.query(
-      `SELECT p.id, p.fecha_hora,
-              el.nombre as local_nombre, el.bandera_url as local_bandera, el.codigo_fifa as local_codigo,
-              ev.nombre as visitante_nombre, ev.bandera_url as visitante_bandera, ev.codigo_fifa as visitante_codigo,
-              f.nombre as fase_nombre, est.nombre as estadio_nombre, c.nombre as ciudad_nombre
-       FROM partidos p
-       JOIN equipos el ON p.equipo_local_id = el.id
-       JOIN equipos ev ON p.equipo_visitante_id = ev.id
-       JOIN fases f ON p.fase_id = f.id
-       JOIN estadios est ON p.estadio_id = est.id
-       JOIN ciudades c ON est.ciudad_id = c.id
-       LEFT JOIN pronosticos pr ON p.id = pr.partido_id AND pr.usuario_id = $1
-       WHERE p.estado = 'PROGRAMADO'
-         AND p.fecha_hora > CURRENT_TIMESTAMP
-         AND pr.id IS NULL
-       ORDER BY p.fecha_hora ASC
-       LIMIT 5`,
-      [userId]
-    );
-    const proximosPendientes = pendingMatchesRes.rows;
+    const pendingMatches = await Partido.findAll({
+      where: { estado: 'PROGRAMADO' },
+      include: [
+        { model: Equipo, as: 'equipoLocal', attributes: ['nombre', 'bandera_url', 'codigo_fifa'] },
+        { model: Equipo, as: 'equipoVisitante', attributes: ['nombre', 'bandera_url', 'codigo_fifa'] },
+        { model: Fase, as: 'fase', attributes: ['nombre'] },
+        { model: Estadio, as: 'estadio', include: [{ model: Ciudad, as: 'ciudad', attributes: ['nombre'] }] },
+        { model: Pronostico, as: 'pronosticos', where: { usuario_id: userId }, required: false, attributes: ['id'] },
+      ],
+      order: [['fecha_hora', 'ASC']],
+      limit: 5,
+    });
+    const proximosPendientes = pendingMatches
+      .filter((match) => match.pronosticos.length === 0 && new Date(match.fecha_hora) > new Date())
+      .map((match) => ({
+        id: match.id,
+        fecha_hora: match.fecha_hora,
+        local_nombre: match.equipoLocal?.nombre,
+        local_bandera: match.equipoLocal?.bandera_url,
+        local_codigo: match.equipoLocal?.codigo_fifa,
+        visitante_nombre: match.equipoVisitante?.nombre,
+        visitante_bandera: match.equipoVisitante?.bandera_url,
+        visitante_codigo: match.equipoVisitante?.codigo_fifa,
+        fase_nombre: match.fase?.nombre,
+        estadio_nombre: match.estadio?.nombre,
+        ciudad_nombre: match.estadio?.ciudad?.nombre,
+      }));
 
-    // 3. Posición en cada grupo y puntaje acumulado en cada uno
-    const positionsRes = await db.query(
-      `SELECT g.id as grupo_id, g.nombre as grupo_nombre, g.codigo_invitacion,
-              cg.posicion, cg.puntos_totales,
-              (SELECT COUNT(*) FROM grupo_usuarios gu WHERE gu.grupo_id = g.id) as total_miembros
-       FROM clasificacion_grupo cg
-       JOIN grupos g ON cg.grupo_id = g.id
-       WHERE cg.usuario_id = $1
-       ORDER BY g.nombre ASC`,
-      [userId]
-    );
-    const posicionesGrupos = positionsRes.rows;
+    const posicionesGrupos = await ClasificacionGrupo.findAll({
+      where: { usuario_id: userId },
+      include: [{ model: require('../config/db').Grupo, as: 'grupo', attributes: ['id', 'nombre', 'codigo_invitacion'] }],
+      attributes: ['posicion', 'puntos_totales'],
+      order: [['grupo', 'nombre', 'ASC']],
+    });
 
-    // 4. Puntaje acumulado total
-    const totalPointsRes = await db.query(
-      'SELECT COALESCE(SUM(puntos_obtenidos), 0)::integer as total FROM pronosticos WHERE usuario_id = $1',
-      [userId]
-    );
-    const puntajeAcumulado = totalPointsRes.rows[0].total;
+    const puntajeAcumulado = await Pronostico.sum('puntos_obtenidos', { where: { usuario_id: userId } }) || 0;
 
     res.json({
       cantidadGrupos,
       proximosPendientes,
-      posicionesGrupos,
+      posicionesGrupos: posicionesGrupos.map((entry) => ({
+        grupo_id: entry.grupo.id,
+        grupo_nombre: entry.grupo.nombre,
+        codigo_invitacion: entry.grupo.codigo_invitacion,
+        posicion: entry.posicion,
+        puntos_totales: entry.puntos_totales,
+        total_miembros: 0,
+      })),
       puntajeAcumulado,
     });
   } catch (error) {
